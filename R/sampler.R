@@ -9,6 +9,7 @@ rsp_sampler <- function(x_train,
                    nIknots,
                    df = 3,
                    sigquant = 0.9,
+                   n_dif = 2,
                    delta,
                    nu,
                    a_delta,
@@ -34,23 +35,40 @@ rsp_sampler <- function(x_train,
   min_y <- min(y)
   max_y <- max(y)
 
-  absolut_min <- min(min(x_train_scale[,1]))
-  absolut_max <- max(max(x_train_scale[,1]))
 
-  # Getting the internal knots
-  knots <- quantile(x_train_scale[,1],seq(0,1,length.out = nIknots+2))[-c(1,nIknots+2)]
+  # Need to create an array for B_train
+  B_train <- array(data = NA,
+                   dim = c(nrow(x_train_scale),
+                           nIknots+3,
+                           ncol(x_train_scale)))
 
-  # Creating the B spline
-  B_train <- as.matrix(splines::ns(x = x_train_scale[,1],knots = knots,
-                                   intercept = FALSE,
-                                   Boundary.knots = c(absolut_min,absolut_max)))
+  absolut_min <- apply(x_train_scale,2,min)
+  absolut_max <-apply(x_train_scale,2,max)
+
+
+  # Iterating over all covariates
+  for(i in 1:ncol(x_train_scale)){
+    # Getting the internal knots
+    knots <- quantile(x_train_scale[,i],seq(0,1,length.out = nIknots+2))[-c(1,nIknots+2)]
+
+    # Creating the B spline
+    B_train[,,i] <- as.matrix(splines::bs(x = x_train_scale[,i],knots = knots,
+                                     intercept = FALSE,
+                                     Boundary.knots = c(absolut_min[i],absolut_max[i])))
+  }
 
   # Getting a penalized version of B_train
-  D <- D_gen(p = ncol(B_train),n_dif = 2)
-
+  if(n_dif!=0){
+    D <- D_gen(p = ncol(B_train[,,1]),n_dif = n_dif)
+  } else {
+    D <- diag(nrow = ncol(B_train[,,1]))
+  }
   # IN CASE WE WANT TO USE THE DIFFERENCE PENALISATION DIRECTLY OVER THE
   #BASIS FUNCTION
-  B_train <- B_train%*%crossprod(D,solve(tcrossprod(D)))
+  # B_train <- B_train%*%crossprod(D,solve(tcrossprod(D)))
+
+  # By adding P in the the beta prior
+  P <- crossprod(D)
 
   # Scaling "y"
   if(scale_y){
@@ -61,12 +79,12 @@ rsp_sampler <- function(x_train,
 
   # Calculating \tau_{mu}
   if(scale_y){
-    tau_b_0 <-  (4*1*(2^2))*10
-    tau_b <- (4*1*(2^2))*10
+    tau_b <- tau_b_0 <-  (4*1*(2^2))
+    # tau_b <- (4*1*(2^2))*10
 
   } else {
-    tau_b_0 <- (4*1*(2^2))/((min_y-max_y)^2)
-    tau_b <- (4*1*(2^2))*10
+    tau_b <- tau_b_0 <- (4*1*(2^2))/((min_y-max_y)^2)
+    # tau_b <- (4*1*(2^2))*10
   }
   # Getting the naive sigma value
   nsigma <- naive_sigma(x = x_train_scale,y = y_scale)
@@ -81,9 +99,11 @@ rsp_sampler <- function(x_train,
 
   # Call the bart function
   tau_init <- nsigma^(-2)
+  tau_init <- 50
 
   sampler_list <- sp_sampler(B_train = B_train,
-                             y = y_scale,tau_b = tau_b,tau_b_intercept = tau_b_0,
+                             D_m = D,
+                             y = as.matrix(y_scale),tau_b = tau_b,tau_b_intercept = tau_b_0,
                              tau = tau_init,a_tau = a_tau,d_tau = d_tau,
                              nu = nu,delta = delta,a_delta = a_delta,
                              d_delta = d_delta,n_mcmc = n_mcmc,n_burn = n_burn)

@@ -4,7 +4,7 @@
 using namespace std;
 
 // Building the constructor
-modelParam::modelParam(arma::mat B_train_,
+modelParam::modelParam(arma::cube B_train_,
                        arma::mat y_,
                        double tau_b_,
                        double tau_b_intercept_,
@@ -20,18 +20,22 @@ modelParam::modelParam(arma::mat B_train_,
 
   // Create a matrix of ones
   arma::vec ones(y_.n_rows,arma::fill::ones);
-  bt_ones = B_train_.t()*ones;
-  btr = B_train_.t()*y_;
+  bt_ones = arma::mat(B_train_.n_cols,B_train_.n_slices);
+
+  for(int i = 0;i<B_train_.n_slices;i++){
+      bt_ones.col(i) = B_train_.slice(i).t()*ones;
+  }
 
   // Filling the parameters
   y = y_;
   B_train = B_train_;
-  tau_b = tau_b_;
+  d = B_train_.n_slices;
+  tau_b = arma::vec(B_train_.n_slices,arma::fill::ones)*tau_b_;
   tau = tau_;
   a_tau = a_tau_;
   d_tau = d_tau_;
   nu = nu_;
-  delta = delta_;
+  delta = arma::vec(B_train_.n_slices,arma::fill::ones)*delta_;
   a_delta = a_delta_;
   d_delta = d_delta_;
   n_mcmc = n_mcmc_;
@@ -85,57 +89,75 @@ arma::mat D_first(modelParam data){
 }
 
 // Building the beta sampler
-void beta_sampler(arma::vec& betas,
+void beta_sampler(arma::mat& betas,
                   double& beta_0,
                   modelParam& data){
 
 
-  // Updating data s_b_0
-  data.s_b_0 = (data.y.n_rows+(data.tau_b_intercept/data.tau));
+  // Iterating over all covariates
+  for(int j = 0;j<data.d;j++){
 
-  // Calculating Gamma Inv
-  // data.Gamma_inv = inv(data.B_train.t()*data.B_train + (data.tau_b/data.tau)*data.P - (1/data.s_b_0)*(data.bt_ones*data.bt_ones.t()));
-  data.Gamma_inv = inv(data.B_train.t()*data.B_train + (data.tau_b/data.tau)*data.P );
 
-  // Ones aux
-  arma::mat ones(data.B_train.n_rows,1,arma::fill::ones);
-  // Calculating mean and variance
-  arma::mat beta_mean = data.Gamma_inv*(data.btr-beta_0*data.B_train.t()*ones);
-  arma::mat beta_cov  = (1/data.tau)*data.Gamma_inv;
+      // Cov aux mat
+      arma::mat cov_sum_aux(data.y.size(), 1,arma::fill::zeros);
 
-  arma::mat sample = arma::randn<arma::mat>(data.Gamma_inv.n_cols);
-  betas = arma::chol(beta_cov,"lower")*sample + beta_mean;
 
+      // Getting the sum element
+      for(int k = 0; k < data.d; k++){
+        if(k == j){
+          continue;
+        }
+        cov_sum_aux = cov_sum_aux + data.B_train.slice(k)*betas.col(k);
+      }
+
+      // Getting the precision aux factor
+      arma::mat inv_precision_aux = arma::inv(data.B_train.slice(j).t()*data.B_train.slice(j)+(data.tau_b(j)/data.tau)*data.P);
+      arma::mat mean_aux = inv_precision_aux*(data.B_train.slice(j).t()*data.y-data.B_train.slice(j).t()*(beta_0+cov_sum_aux));
+      arma::mat cov_aux = (1/data.tau)*inv_precision_aux;
+
+      // cout << "Error sample BETA" << endl;
+      arma::mat sample = arma::randn<arma::mat>(betas.n_rows);
+      // cout << "Error variance" << endl;
+      betas.col(j) = arma::chol(cov_aux,"lower")*sample + mean_aux;
+  }
 
   return;
 }
 
 // Building the beta_0 sampler
-void beta_0_sampler(arma::vec& betas,
+void beta_0_sampler(arma::mat& betas,
                     double& beta_0,
                     modelParam& data){
 
-  // Calculating the mean
-  arma::vec mean_aux = betas.t()*data.bt_ones;
-  double beta_0_mean = (1/data.s_b_0)*(sum(data.y.col(0))-mean_aux(0));
-  double beta_0_sd = sqrt(1/(data.tau*data.s_b_0));
+  double mean_sum_aux = 0.0;
 
-  beta_0 = arma::randn()*beta_0_sd + beta_0_mean;
+  // Getting the sum element
+  for(int k = 0; k < data.d; k++){
+      mean_sum_aux = mean_sum_aux + arma::as_scalar(betas.col(k).t()*(data.bt_ones.col(k)));
+  }
 
-  return;
+
+  double s_gamma = data.y.size()+(data.tau_b_intercept/data.tau);
+  double mean_aux = (1/s_gamma)*(arma::accu(data.y)-mean_sum_aux);
+  double sd_aux = sqrt(1/(s_gamma*data.tau));
+
+  beta_0 = arma::randn()*sd_aux + mean_aux;
+
 }
 
 
 // Building the \tau_b sampler
-void tau_b_sampler(arma::vec& betas,
+void tau_b_sampler(arma::mat& betas,
                    modelParam& data){
 
-  // Calculating the shape and rate parameter
-  double tau_b_shape = 0.5*data.p+0.5*data.nu;
-  arma::vec rate_aux = betas.t()*data.P*betas;
-  double tau_b_rate = 0.5*rate_aux(0) + 0.5*data.delta*data.nu;
+  for(int j; j< data.d; j++){
+      // Calculating the shape and rate parameter
+      double tau_b_shape = 0.5*data.p+0.5*data.nu;
+      double rate_aux = arma::as_scalar(betas.col(j).t()*data.P*betas.col(j));
+      double tau_b_rate = 0.5*rate_aux + 0.5*data.delta(j)*data.nu;
 
-  data.tau_b = R::rgamma(tau_b_shape,1/tau_b_rate);
+      data.tau_b(j) = R::rgamma(tau_b_shape,1/tau_b_rate);
+  }
 
   return;
 }
@@ -143,11 +165,14 @@ void tau_b_sampler(arma::vec& betas,
 // Updating delta
 void delta_sampler(modelParam& data){
 
-  // Calculating shape and rate parameter
-  double delta_shape = 0.5*data.nu+data.a_delta;
-  double delta_rate = 0.5*data.nu*data.tau_b + data.d_delta;
 
-  data.delta = R::rgamma(delta_shape,1/delta_rate);
+  for(int j = 0; j<data.d; j++){
+    // Calculating shape and rate parameter
+    double delta_shape = 0.5*data.nu+data.a_delta;
+    double delta_rate = 0.5*data.nu*data.tau_b(j) + data.d_delta;
+
+    data.delta(j) = R::rgamma(delta_shape,1/delta_rate);
+  }
 
   return;
 }
@@ -166,8 +191,9 @@ void tau_sampler(modelParam& data,
 
 // Generating the sample code for the sampler
 //[[Rcpp::export]]
-Rcpp::List sp_sampler(arma::mat B_train,
+Rcpp::List sp_sampler(arma::cube B_train,
                      arma::mat y,
+                     arma::mat D_m,
                      double tau_b,
                      double tau_b_intercept,
                      double tau,
@@ -181,7 +207,7 @@ Rcpp::List sp_sampler(arma::mat B_train,
                      int n_burn){
 
 
-    // cout << "Error 0" << endl;
+    cout << "Error 0" << endl;
 
     // Initalising the data object
     modelParam data(    B_train,
@@ -199,14 +225,11 @@ Rcpp::List sp_sampler(arma::mat B_train,
                         n_burn);
 
     // Generating the P matrix
-    arma::mat D_m = D_diag(data);
-    // arma::mat D_m = D_first(data);
-
-    data.P = D_m.t()*D_m;
+    data.P = D_m.t()*D_m + arma::eye(B_train.n_cols,B_train.n_cols)*1e-8;
 
     // Initializing the vector of betas
-    // cout << "Error 1" << endl;
-    arma::vec betas(data.p, arma::fill::ones);
+    cout << "Error 1" << endl;
+    arma::mat betas(data.p,data.d, arma::fill::ones);
     double beta_0 = 0;
     arma::vec y_hat(data.y.n_rows,arma::fill::zeros);
 
@@ -217,8 +240,8 @@ Rcpp::List sp_sampler(arma::mat B_train,
     arma::mat y_hat_post(n_post,data.y.n_rows,arma::fill::ones);
 
     arma::vec tau_post(n_post,arma::fill::ones);
-    arma::vec tau_b_post(n_post,arma::fill::ones);
-    arma::vec delta_post(n_post,arma::fill::ones);
+    arma::mat tau_b_post(n_post,data.d,arma::fill::ones);
+    arma::mat delta_post(n_post,data.d,arma::fill::ones);
     int post_iter = 0;
 
 
@@ -231,12 +254,22 @@ Rcpp::List sp_sampler(arma::mat B_train,
       beta_0_sampler(betas, beta_0, data);
       // cout << "Tau_b error" << endl;
       tau_b_sampler(betas,data);
+      cout << "Tau_b value corresponds to: ";
+      for(int t = 0; t<data.d;t++){
+        cout << data.tau_b(t) << " ";
+      }
+      cout << endl;
       // cout << "Delta error" << endl;
       delta_sampler(data);
 
       // Calculating the predictions
       // cout << "Y_hat error" << endl;
-      y_hat = data.B_train*betas + beta_0;
+      arma::vec y_hat_aux(data.y.size(),arma::fill::zeros);
+      for(int j = 0;j<data.d;j++){
+        y_hat_aux = y_hat_aux + data.B_train.slice(j)*betas.col(j);
+      }
+
+      y_hat = y_hat_aux + beta_0;
 
       // cout << "Tau sampler error" << endl;
       tau_sampler(data,y_hat);
@@ -245,11 +278,11 @@ Rcpp::List sp_sampler(arma::mat B_train,
       // cout << " No error" << endl;
       // Iterating and storing the posterior samples
       if(i >= data.n_burn){
-        beta_post.row(post_iter) = betas.t();
+        // beta_post.row(post_iter) = betas.t();
         beta_0_post(post_iter) = beta_0;
         y_hat_post.row(post_iter) = y_hat.t();
-        tau_b_post(post_iter) = data.tau_b;
-        delta_post(post_iter) = data.delta;
+        tau_b_post.row(post_iter) = data.tau_b.t();
+        delta_post.row(post_iter) = data.delta.t();
         tau_post(post_iter) = data.tau;
         post_iter++;
       }
