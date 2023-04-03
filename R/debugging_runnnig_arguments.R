@@ -1,0 +1,12 @@
+x_train = x
+y = unlist(c(y))
+x_test = x_test
+n_tree = 1
+n_mcmc = 2500
+alpha = 0.95
+dif_order = 1
+beta = 2
+nIknots = 10
+delta = 1
+n_burn = 500
+scale_bool = FALSE
